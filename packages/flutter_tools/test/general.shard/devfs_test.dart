@@ -1,4 +1,4 @@
-// Copyright 2016 The Chromium Authors. All rights reserved.
+// Copyright 2014 The Flutter Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
@@ -10,11 +10,14 @@ import 'package:file/file.dart';
 import 'package:file/memory.dart';
 import 'package:flutter_tools/src/base/file_system.dart';
 import 'package:flutter_tools/src/base/io.dart';
+import 'package:flutter_tools/src/base/net.dart';
+import 'package:flutter_tools/src/base/os.dart';
 import 'package:flutter_tools/src/compile.dart';
 import 'package:flutter_tools/src/devfs.dart';
 import 'package:flutter_tools/src/vmservice.dart';
-import 'package:json_rpc_2/json_rpc_2.dart' as rpc;
 import 'package:mockito/mockito.dart';
+import 'package:package_config/package_config.dart';
+import 'package:vm_service/vm_service.dart' as vm_service;
 
 import '../src/common.dart';
 import '../src/context.dart';
@@ -25,10 +28,9 @@ void main() {
   String filePath;
   Directory tempDir;
   String basePath;
-  DevFS devFS;
 
   setUpAll(() {
-    fs = MemoryFileSystem();
+    fs = MemoryFileSystem.test();
     filePath = fs.path.join('lib', 'foo.txt');
   });
 
@@ -69,7 +71,7 @@ void main() {
       file.parent.createSync(recursive: true);
       file.writeAsBytesSync(<int>[1, 2, 3], flush: true);
 
-      final DateTime fiveSecondsAgo = DateTime.now().subtract(const Duration(seconds:5));
+      final DateTime fiveSecondsAgo = file.statSync().modified.subtract(const Duration(seconds: 5));
       expect(content.isModifiedAfter(fiveSecondsAgo), isTrue);
       expect(content.isModifiedAfter(fiveSecondsAgo), isTrue);
       expect(content.isModifiedAfter(null), isTrue);
@@ -89,205 +91,206 @@ void main() {
       expect(content.isModified, isFalse);
     }, overrides: <Type, Generator>{
       FileSystem: () => fs,
+      ProcessManager: () => FakeProcessManager.any(),
     }, skip: Platform.isWindows); // TODO(jonahwilliams): fix or disable this functionality.
   });
 
+  group('mocked http client', () {
+    HttpOverrides savedHttpOverrides;
+    HttpClient httpClient;
+    OperatingSystemUtils osUtils;
+
+    setUpAll(() {
+      tempDir = _newTempDir(fs);
+      basePath = tempDir.path;
+      savedHttpOverrides = HttpOverrides.current;
+      httpClient = MockOddlyFailingHttpClient();
+      HttpOverrides.global = MyHttpOverrides(httpClient);
+      osUtils = MockOperatingSystemUtils();
+    });
+
+    tearDownAll(() async {
+      HttpOverrides.global = savedHttpOverrides;
+    });
+
+    final List<dynamic> exceptions = <dynamic>[
+      Exception('Connection resert by peer'),
+      const OSError('Connection reset by peer'),
+    ];
+
+    for (final dynamic exception in exceptions) {
+      testUsingContext('retry uploads when failure: $exception', () async {
+        final File file = fs.file(fs.path.join(basePath, filePath));
+        await file.parent.create(recursive: true);
+        file.writeAsBytesSync(<int>[1, 2, 3]);
+        // simulate package
+        await _createPackage(fs, 'somepkg', 'somefile.txt');
+
+        final FakeVmServiceHost fakeVmServiceHost = FakeVmServiceHost(
+          requests: <VmServiceExpectation>[
+            FakeVmServiceRequest(
+              method: '_createDevFS',
+              args: <String, Object>{
+                'fsName': 'test',
+              },
+              jsonResponse: <String, Object>{
+                'uri': Uri.parse('test').toString(),
+              }
+            )
+          ],
+        );
+        setHttpAddress(Uri.parse('http://localhost'), fakeVmServiceHost.vmService);
+
+        reset(httpClient);
+
+        final MockHttpClientRequest httpRequest = MockHttpClientRequest();
+        when(httpRequest.headers).thenReturn(MockHttpHeaders());
+        when(httpClient.putUrl(any)).thenAnswer((Invocation invocation) {
+          return Future<HttpClientRequest>.value(httpRequest);
+        });
+        final MockHttpClientResponse httpClientResponse = MockHttpClientResponse();
+        int nRequest = 0;
+        const int kFailedAttempts = 5;
+        when(httpRequest.close()).thenAnswer((Invocation invocation) {
+          if (nRequest++ < kFailedAttempts) {
+            throw exception;
+          }
+          return Future<HttpClientResponse>.value(httpClientResponse);
+        });
+
+        final DevFS devFS = DevFS(
+          fakeVmServiceHost.vmService,
+          'test',
+          tempDir,
+          osUtils: osUtils,
+        );
+        await devFS.create();
+
+        final MockResidentCompiler residentCompiler = MockResidentCompiler();
+        final UpdateFSReport report = await devFS.update(
+          mainUri: Uri.parse('lib/foo.txt'),
+          generator: residentCompiler,
+          pathToReload: 'lib/foo.txt.dill',
+          trackWidgetCreation: false,
+          invalidatedFiles: <Uri>[],
+          packageConfig: PackageConfig.empty,
+        );
+
+        expect(report.syncedBytes, 22);
+        expect(report.success, isTrue);
+        verify(httpClient.putUrl(any)).called(kFailedAttempts + 1);
+        verify(httpRequest.close()).called(kFailedAttempts + 1);
+        verify(osUtils.gzipLevel1Stream(any)).called(kFailedAttempts + 1);
+      }, overrides: <Type, Generator>{
+        FileSystem: () => fs,
+        HttpClientFactory: () => () => httpClient,
+        ProcessManager: () => FakeProcessManager.any(),
+      });
+    }
+  });
+
   group('devfs remote', () {
-    MockVMService vmService;
-    final MockResidentCompiler residentCompiler = MockResidentCompiler();
+    DevFS devFS;
 
     setUpAll(() async {
       tempDir = _newTempDir(fs);
       basePath = tempDir.path;
-      vmService = MockVMService();
-      await vmService.setUp();
+    });
+
+    setUp(() {
+      final FakeVmServiceHost fakeVmServiceHost = FakeVmServiceHost(
+        requests: <VmServiceExpectation>[
+          FakeVmServiceRequest(
+            method: '_createDevFS',
+            args: <String, Object>{
+              'fsName': 'test',
+            },
+            jsonResponse: <String, Object>{
+              'uri': Uri.parse('test').toString(),
+            }
+          )
+        ],
+      );
+      setHttpAddress(Uri.parse('http://localhost'), fakeVmServiceHost.vmService);
+      devFS = DevFS(
+        fakeVmServiceHost.vmService,
+        'test',
+        tempDir,
+        osUtils: FakeOperatingSystemUtils(),
+        // TODO(jonahwilliams): remove and prevent usage of http writer.
+        disableUpload: true,
+      );
     });
 
     tearDownAll(() async {
-      await vmService.tearDown();
       _cleanupTempDirs();
     });
 
-    testUsingContext('create dev file system', () async {
-      // simulate workspace
-      final File file = fs.file(fs.path.join(basePath, filePath));
-      await file.parent.create(recursive: true);
-      file.writeAsBytesSync(<int>[1, 2, 3]);
-
-      // simulate package
-      await _createPackage(fs, 'somepkg', 'somefile.txt');
-
-      devFS = DevFS(vmService, 'test', tempDir);
-      await devFS.create();
-      vmService.expectMessages(<String>['create test']);
-      expect(devFS.assetPathsToEvict, isEmpty);
-
-      final UpdateFSReport report = await devFS.update(
-        mainPath: 'lib/foo.txt',
-        generator: residentCompiler,
-        pathToReload: 'lib/foo.txt.dill',
-        trackWidgetCreation: false,
-        invalidatedFiles: <Uri>[],
-      );
-      vmService.expectMessages(<String>[
-        'writeFile test lib/foo.txt.dill',
-      ]);
-      expect(devFS.assetPathsToEvict, isEmpty);
-      expect(report.syncedBytes, 22);
-      expect(report.success, true);
-    }, overrides: <Type, Generator>{
-      FileSystem: () => fs,
-    });
-
-    testUsingContext('delete dev file system', () async {
-      expect(vmService.messages, isEmpty, reason: 'prior test timeout');
-      await devFS.destroy();
-      vmService.expectMessages(<String>['destroy test']);
-      expect(devFS.assetPathsToEvict, isEmpty);
-    }, overrides: <Type, Generator>{
-      FileSystem: () => fs,
-    });
-
-    testUsingContext('cleanup preexisting file system', () async {
-      // simulate workspace
-      final File file = fs.file(fs.path.join(basePath, filePath));
-      await file.parent.create(recursive: true);
-      file.writeAsBytesSync(<int>[1, 2, 3]);
-
-      // simulate package
-      await _createPackage(fs, 'somepkg', 'somefile.txt');
-
-      devFS = DevFS(vmService, 'test', tempDir);
-      await devFS.create();
-      vmService.expectMessages(<String>['create test']);
-      expect(devFS.assetPathsToEvict, isEmpty);
-
-      // Try to create again.
-      await devFS.create();
-      vmService.expectMessages(<String>['create test', 'destroy test', 'create test']);
-      expect(devFS.assetPathsToEvict, isEmpty);
-
-      // Really destroy.
-      await devFS.destroy();
-      vmService.expectMessages(<String>['destroy test']);
-      expect(devFS.assetPathsToEvict, isEmpty);
-    }, overrides: <Type, Generator>{
-      FileSystem: () => fs,
-    });
-
     testUsingContext('reports unsuccessful compile when errors are returned', () async {
-      devFS = DevFS(vmService, 'test', tempDir);
       await devFS.create();
+      final DateTime previousCompile = devFS.lastCompiled;
 
       final RealMockResidentCompiler residentCompiler = RealMockResidentCompiler();
       when(residentCompiler.recompile(
         any,
         any,
         outputPath: anyNamed('outputPath'),
+        packageConfig: anyNamed('packageConfig'),
       )).thenAnswer((Invocation invocation) {
         return Future<CompilerOutput>.value(const CompilerOutput('example', 2, <Uri>[]));
       });
 
       final UpdateFSReport report = await devFS.update(
-        mainPath: 'lib/foo.txt',
+        mainUri: Uri.parse('lib/foo.txt'),
         generator: residentCompiler,
         pathToReload: 'lib/foo.txt.dill',
         trackWidgetCreation: false,
         invalidatedFiles: <Uri>[],
+        packageConfig: PackageConfig.empty,
       );
 
       expect(report.success, false);
+      expect(devFS.lastCompiled, previousCompile);
     }, overrides: <Type, Generator>{
       FileSystem: () => fs,
+      ProcessManager: () => FakeProcessManager.any(),
     });
 
-  });
-}
+    testUsingContext('correctly updates last compiled time when compilation does not fail', () async {
+      // simulate package
+      final File sourceFile = await _createPackage(fs, 'somepkg', 'main.dart');
 
-class MockVMService extends BasicMock implements VMService {
-  MockVMService() {
-    _vm = MockVM(this);
-  }
+      await devFS.create();
+      final DateTime previousCompile = devFS.lastCompiled;
 
-  Uri _httpAddress;
-  HttpServer _server;
-  MockVM _vm;
-
-  @override
-  Uri get httpAddress => _httpAddress;
-
-  @override
-  VM get vm => _vm;
-
-  Future<void> setUp() async {
-    try {
-      _server = await HttpServer.bind(InternetAddress.loopbackIPv6, 0);
-      _httpAddress = Uri.parse('http://[::1]:${_server.port}');
-    } on SocketException {
-      // Fall back to IPv4 if the host doesn't support binding to IPv6 localhost
-      _server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
-      _httpAddress = Uri.parse('http://127.0.0.1:${_server.port}');
-    }
-    _server.listen((HttpRequest request) {
-      final String fsName = request.headers.value('dev_fs_name');
-      final String devicePath = utf8.decode(base64.decode(request.headers.value('dev_fs_uri_b64')));
-      messages.add('writeFile $fsName $devicePath');
-      request.drain<List<int>>().then<void>((List<int> value) {
-        request.response
-          ..write('Got it')
-          ..close();
+      final RealMockResidentCompiler residentCompiler = RealMockResidentCompiler();
+      when(residentCompiler.recompile(
+        any,
+        any,
+        outputPath: anyNamed('outputPath'),
+        packageConfig: anyNamed('packageConfig'),
+      )).thenAnswer((Invocation invocation) {
+        fs.file('example').createSync();
+        return Future<CompilerOutput>.value(CompilerOutput('example', 0, <Uri>[sourceFile.uri]));
       });
+
+      final UpdateFSReport report = await devFS.update(
+        mainUri: Uri.parse('lib/main.dart'),
+        generator: residentCompiler,
+        pathToReload: 'lib/foo.txt.dill',
+        trackWidgetCreation: false,
+        invalidatedFiles: <Uri>[],
+        packageConfig: PackageConfig.empty,
+      );
+
+      expect(report.success, true);
+      expect(devFS.lastCompiled, isNot(previousCompile));
+    }, overrides: <Type, Generator>{
+      FileSystem: () => fs,
+      HttpClient: () => () => HttpClient(),
+      ProcessManager: () => FakeProcessManager.any(),
     });
-  }
-
-  Future<void> tearDown() async {
-    await _server?.close();
-  }
-
-  @override
-  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
-}
-
-class MockVM implements VM {
-  MockVM(this._service);
-
-  final MockVMService _service;
-  final Uri _baseUri = Uri.parse('file:///tmp/devfs/test');
-  bool _devFSExists = false;
-
-  static const int kFileSystemAlreadyExists = 1001;
-
-  @override
-  Future<Map<String, dynamic>> createDevFS(String fsName) async {
-    _service.messages.add('create $fsName');
-    if (_devFSExists) {
-      throw rpc.RpcException(kFileSystemAlreadyExists, 'File system already exists');
-    }
-    _devFSExists = true;
-    return <String, dynamic>{'uri': '$_baseUri'};
-  }
-
-  @override
-  Future<Map<String, dynamic>> deleteDevFS(String fsName) async {
-    _service.messages.add('destroy $fsName');
-    _devFSExists = false;
-    return <String, dynamic>{'type': 'Success'};
-  }
-
-  @override
-  Future<Map<String, dynamic>> invokeRpcRaw(
-    String method, {
-    Map<String, dynamic> params = const <String, dynamic>{},
-    Duration timeout,
-    bool timeoutFatal = true,
-    bool truncateLogs = true,
-  }) async {
-    _service.messages.add('$method $params');
-    return <String, dynamic>{'success': true};
-  }
-
-  @override
-  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
+  });
 }
 
 class RealMockResidentCompiler extends Mock implements ResidentCompiler {}
@@ -307,7 +310,7 @@ void _cleanupTempDirs() {
   }
 }
 
-Future<void> _createPackage(FileSystem fs, String pkgName, String pkgFileName, { bool doubleSlash = false }) async {
+Future<File> _createPackage(FileSystem fs, String pkgName, String pkgFileName, { bool doubleSlash = false }) async {
   final Directory pkgTempDir = _newTempDir(fs);
   String pkgFilePath = fs.path.join(pkgTempDir.path, pkgName, 'lib', pkgFileName);
   if (doubleSlash) {
@@ -323,6 +326,23 @@ Future<void> _createPackage(FileSystem fs, String pkgName, String pkgFileName, {
   _packages.forEach((String pkgName, Uri pkgUri) {
     sb.writeln('$pkgName:$pkgUri');
   });
-  fs.file(fs.path.join(_tempDirs[0].path, '.packages')).writeAsStringSync(sb.toString());
+  return fs.file(fs.path.join(_tempDirs[0].path, '.packages'))
+    ..writeAsStringSync(sb.toString());
 }
 
+class MyHttpOverrides extends HttpOverrides {
+  MyHttpOverrides(this._httpClient);
+  @override
+  HttpClient createHttpClient(SecurityContext context) {
+    return _httpClient;
+  }
+
+  final HttpClient _httpClient;
+}
+
+class MockOddlyFailingHttpClient extends Mock implements HttpClient {}
+class MockHttpClientRequest extends Mock implements HttpClientRequest {}
+class MockHttpHeaders extends Mock implements HttpHeaders {}
+class MockHttpClientResponse extends Mock implements HttpClientResponse {}
+class MockOperatingSystemUtils extends Mock implements OperatingSystemUtils {}
+class MockVMService extends Mock implements vm_service.VmService {}

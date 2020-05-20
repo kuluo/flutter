@@ -1,4 +1,4 @@
-// Copyright 2015 The Chromium Authors. All rights reserved.
+// Copyright 2014 The Flutter Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
@@ -22,12 +22,27 @@ class SemanticsDebugger extends StatefulWidget {
   /// Creates a widget that visualizes the semantics for the child.
   ///
   /// The [child] argument must not be null.
-  const SemanticsDebugger({ Key key, this.child }) : super(key: key);
+  ///
+  /// [labelStyle] dictates the [TextStyle] used for the semantics labels.
+  const SemanticsDebugger({
+    Key key,
+    @required this.child,
+    this.labelStyle = const TextStyle(
+      color: Color(0xFF000000),
+      fontSize: 10.0,
+      height: 0.8,
+    ),
+  }) : assert(child != null),
+       assert(labelStyle != null),
+       super(key: key);
 
   /// The widget below this widget in the tree.
   ///
   /// {@macro flutter.widgets.child}
   final Widget child;
+
+  /// The [TextStyle] to use when rendering semantics labels.
+  final TextStyle labelStyle;
 
   @override
   _SemanticsDebuggerState createState() => _SemanticsDebuggerState();
@@ -68,11 +83,7 @@ class _SemanticsDebuggerState extends State<SemanticsDebugger> with WidgetsBindi
     SchedulerBinding.instance.addPostFrameCallback((Duration timeStamp) {
       // Semantic information are only available at the end of a frame and our
       // only chance to paint them on the screen is the next frame. To achieve
-      // this, we call setState() in a post-frame callback. THIS PATTERN SHOULD
-      // NOT BE COPIED. Calling setState() in a post-frame callback is a bad
-      // idea as it will not schedule a frame and your app may be lagging behind
-      // by one frame. We manually call scheduleFrame() to force a frame and
-      // ensure that the semantic information are always painted on the screen.
+      // this, we call setState() in a post-frame callback.
       if (mounted) {
         // If we got disposed this frame, we will still get an update,
         // because the inactive list is flushed after the semantics updates
@@ -80,7 +91,6 @@ class _SemanticsDebuggerState extends State<SemanticsDebugger> with WidgetsBindi
         setState(() {
           // The generation of the _SemanticsDebuggerListener has changed.
         });
-        SchedulerBinding.instance.scheduleFrame();
       }
     });
   }
@@ -150,6 +160,7 @@ class _SemanticsDebuggerState extends State<SemanticsDebugger> with WidgetsBindi
         _client.generation,
         _lastPointerDownLocation, // in physical pixels
         WidgetsBinding.instance.window.devicePixelRatio,
+        widget.labelStyle,
       ),
       child: GestureDetector(
         behavior: HitTestBehavior.opaque,
@@ -195,12 +206,13 @@ class _SemanticsClient extends ChangeNotifier {
 }
 
 class _SemanticsDebuggerPainter extends CustomPainter {
-  const _SemanticsDebuggerPainter(this.owner, this.generation, this.pointerPosition, this.devicePixelRatio);
+  const _SemanticsDebuggerPainter(this.owner, this.generation, this.pointerPosition, this.devicePixelRatio, this.labelStyle);
 
   final PipelineOwner owner;
   final int generation;
   final Offset pointerPosition; // in physical pixels
   final double devicePixelRatio;
+  final TextStyle labelStyle;
 
   SemanticsNode get _rootSemanticsNode {
     return owner.semanticsOwner?.rootSemanticsNode;
@@ -306,11 +318,7 @@ class _SemanticsDebuggerPainter extends CustomPainter {
     canvas.clipRect(rect);
     final TextPainter textPainter = TextPainter()
       ..text = TextSpan(
-        style: const TextStyle(
-          color: Color(0xFF000000),
-          fontSize: 10.0,
-          height: 0.8,
-        ),
+        style: labelStyle,
         text: message,
       )
       ..textDirection = TextDirection.ltr // _getMessage always returns LTR text, even if node.label is RTL

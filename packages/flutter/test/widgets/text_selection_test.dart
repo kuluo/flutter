@@ -1,4 +1,4 @@
-// Copyright 2018 The Chromium Authors. All rights reserved.
+// Copyright 2014 The Flutter Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
@@ -7,7 +7,6 @@ import 'package:flutter/gestures.dart' show PointerDeviceKind;
 import 'package:flutter/widgets.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/foundation.dart' show debugDefaultTargetPlatformOverride;
 
 void main() {
   int tapCount;
@@ -84,8 +83,8 @@ void main() {
         home: provider.buildGestureDetector(
           behavior: HitTestBehavior.translucent,
           child: FakeEditableText(key: editableTextKey),
-        )
-      )
+        ),
+      ),
     );
   }
 
@@ -284,7 +283,7 @@ void main() {
         pressure: 0.0,
         pressureMin: 0,
         pressureMax: 1,
-      )
+      ),
     );
     await tester.pump(const Duration(milliseconds: 50));
     await gesture.up();
@@ -552,7 +551,6 @@ void main() {
 
   // Regression test for https://github.com/flutter/flutter/issues/37032.
   testWidgets("selection handle's GestureDetector should not cover the entire screen", (WidgetTester tester) async {
-    debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
     final TextEditingController controller = TextEditingController(text: 'a');
 
     await tester.pumpWidget(
@@ -583,9 +581,7 @@ void main() {
 
     expect(hitRect.size.width, lessThan(textFieldRect.size.width));
     expect(hitRect.size.height, lessThan(textFieldRect.size.height));
-
-    debugDefaultTargetPlatformOverride = null;
-  });
+  }, variant: const TargetPlatformVariant(<TargetPlatform>{ TargetPlatform.iOS,  TargetPlatform.macOS }));
 }
 
 class FakeTextSelectionGestureDetectorBuilderDelegate implements TextSelectionGestureDetectorBuilderDelegate {
@@ -624,7 +620,7 @@ class FakeEditableTextState extends EditableTextState {
   bool showToolbarCalled = false;
 
   @override
-  RenderEditable get renderEditable => _editableKey.currentContext.findRenderObject();
+  RenderEditable get renderEditable => _editableKey.currentContext.findRenderObject() as RenderEditable;
 
   @override
   bool showToolbar() {

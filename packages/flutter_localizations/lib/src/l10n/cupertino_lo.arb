@@ -3,7 +3,7 @@
   "datePickerHourSemanticsLabelOther": "$hour ໂມງກົງ",
   "datePickerMinuteSemanticsLabelOne": "1 ນາທີ",
   "datePickerMinuteSemanticsLabelOther": "$minute ນາທີ",
-  "datePickerDateOrder": "dmy",
+  "datePickerDateOrder": "mdy",
   "datePickerDateTimeOrder": "date_time_dayPeriod",
   "anteMeridiemAbbreviation": "ກ່ອນທ່ຽງ",
   "postMeridiemAbbreviation": "ຫຼັງທ່ຽງ",
@@ -18,5 +18,7 @@
   "cutButtonLabel": "ຕັດ",
   "copyButtonLabel": "ສຳເນົາ",
   "pasteButtonLabel": "ວາງ",
-  "selectAllButtonLabel": "ເລືອກທັງໝົດ"
+  "selectAllButtonLabel": "ເລືອກທັງໝົດ",
+  "tabSemanticsLabel": "TBD",
+  "modalBarrierDismissLabel": "ປິດໄວ້"
 }

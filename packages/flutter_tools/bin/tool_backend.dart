@@ -1,7 +1,8 @@
-// Copyright 2019 The Chromium Authors. All rights reserved.
+// Copyright 2014 The Flutter Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+import 'dart:convert'; // ignore: dart_convert_import.
 import 'dart:io'; // ignore: dart_io_import.
 import 'package:path/path.dart' as path; // ignore: package_path_import.
 
@@ -10,13 +11,20 @@ Future<void> main(List<String> arguments) async {
   final String targetPlatform = arguments[0];
   final String buildMode = arguments[1].toLowerCase();
 
-  final String projectDirectory = Platform.environment['PROJECT_DIR'];
-  final bool verbose = Platform.environment['VERBOSE_SCRIPT_LOGGING'] != null;
-  final bool trackWidgetCreation = Platform.environment['TRACK_WIDGET_CREATION'] != null;
-  final String flutterTarget = Platform.environment['FLUTTER_TARGET'] ?? path.join('lib', 'main.dart');
+  final String dartDefines = Platform.environment['DART_DEFINES'];
+  final bool dartObfuscation = Platform.environment['DART_OBFUSCATION'] == 'true';
+  final String extraFrontEndOptions = Platform.environment['EXTRA_FRONT_END_OPTIONS'];
+  final String extraGenSnapshotOptions = Platform.environment['EXTRA_GEN_SNAPSHOT_OPTIONS'];
   final String flutterEngine = Platform.environment['FLUTTER_ENGINE'];
-  final String localEngine = Platform.environment['LOCAL_ENGINE'];
   final String flutterRoot = Platform.environment['FLUTTER_ROOT'];
+  final String flutterTarget = Platform.environment['FLUTTER_TARGET']
+    ?? path.join('lib', 'main.dart');
+  final String localEngine = Platform.environment['LOCAL_ENGINE'];
+  final String projectDirectory = Platform.environment['PROJECT_DIR'];
+  final String splitDebugInfo = Platform.environment['SPLIT_DEBUG_INFO'];
+  final bool trackWidgetCreation = Platform.environment['TRACK_WIDGET_CREATION'] == 'true';
+  final bool treeShakeIcons = Platform.environment['TREE_SHAKE_ICONS'] == 'true';
+  final bool verbose = Platform.environment['VERBOSE_SCRIPT_LOGGING'] == 'true';
 
   Directory.current = projectDirectory;
 
@@ -34,52 +42,50 @@ or
     exit(1);
   }
 
-  String cacheDirectory;
-  switch (targetPlatform) {
-    case 'linux-x64':
-      cacheDirectory = 'linux/flutter/ephemeral';
-      break;
-    case 'windows-x64':
-      cacheDirectory = 'windows/flutter/ephemeral';
-      break;
-    default:
-      stderr.write('Unsupported target platform $targetPlatform');
-      exit(1);
-  }
-
   final String flutterExecutable = path.join(
-      flutterRoot, 'bin', Platform.isWindows ? 'flutter.bat' : 'flutter');
-  final ProcessResult unpackResult = await Process.run(
+    flutterRoot, 'bin', Platform.isWindows ? 'flutter.bat' : 'flutter');
+  final String target = targetPlatform == 'windows-x64'
+    ? 'debug_bundle_windows_assets'
+    : 'debug_bundle_linux_assets';
+
+  // TODO(jonahwilliams): currently all builds are debug builds. Remove the
+  // hardcoded mode when profile and release support is added.
+  final Process assembleProcess = await Process.start(
     flutterExecutable,
     <String>[
-      '--suppress-analytics',
-      if (verbose) '--verbose',
-      'unpack',
-      '--target-platform=$targetPlatform',
-      '--cache-dir=$cacheDirectory',
+      if (verbose)
+        '--verbose',
       if (flutterEngine != null) '--local-engine-src-path=$flutterEngine',
       if (localEngine != null) '--local-engine=$localEngine',
-    ]);
-  if (unpackResult.exitCode != 0) {
-    stderr.write(unpackResult.stderr);
+      'assemble',
+      '--output=build',
+      '-dTargetPlatform=$targetPlatform',
+      '-dTrackWidgetCreation=$trackWidgetCreation',
+      '-dBuildMode=debug',
+      '-dTargetFile=$flutterTarget',
+      '-dTreeShakeIcons="$treeShakeIcons"',
+      '-dDartObfuscation=$dartObfuscation',
+      if (splitDebugInfo != null)
+        '-dSplitDebugInfo=$splitDebugInfo',
+      if (dartDefines != null)
+        '--DartDefines=$dartDefines',
+      if (extraGenSnapshotOptions != null)
+        '--ExtraGenSnapshotOptions=$extraGenSnapshotOptions',
+      if (extraFrontEndOptions != null)
+        '-dExtraFrontEndOptions=$extraFrontEndOptions',
+      target,
+    ],
+  );
+  assembleProcess.stdout
+    .transform(utf8.decoder)
+    .transform(const LineSplitter())
+    .listen(stdout.writeln);
+  assembleProcess.stderr
+    .transform(utf8.decoder)
+    .transform(const LineSplitter())
+    .listen(stderr.writeln);
+
+  if (await assembleProcess.exitCode != 0) {
     exit(1);
   }
-  final ProcessResult buildResult = await Process.run(
-    flutterExecutable,
-    <String>[
-      '--suppress-analytics',
-      if (verbose) '--verbose',
-      'build',
-      'bundle',
-      '--target=$flutterTarget',
-      '--target-platform=$targetPlatform',
-      if (trackWidgetCreation) '--track-widget-creation',
-      if (flutterEngine != null) '--local-engine-src-path=$flutterEngine',
-      if (localEngine != null) '--local-engine=$localEngine',
-    ]);
-  if (buildResult.exitCode != 0) {
-    stderr.write(buildResult.stderr);
-    exit(1);
-  }
-  exit(0);
 }

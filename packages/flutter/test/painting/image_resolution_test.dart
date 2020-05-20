@@ -1,4 +1,4 @@
-// Copyright 2017 The Chromium Authors. All rights reserved.
+// Copyright 2014 The Flutter Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
@@ -139,13 +139,13 @@ void main() {
 
       assetImage.obtainKey(ImageConfiguration(
         bundle: testAssetBundle,
-        devicePixelRatio: 3.0)
+        devicePixelRatio: 3.0),
       ).then(expectAsync1((AssetBundleImageKey bundleKey) {
         expect(bundleKey.name, mainAssetPath);
         expect(bundleKey.scale, 1.0);
       }));
     });
-  }, skip: isBrowser);
+  });
 
   group('Regression - When assets available are 1.0 and 3.0 check devices with a range of scales', () {
     const String mainAssetPath = 'assets/normalFolder/normalFile.png';
@@ -172,7 +172,7 @@ void main() {
       // we have 1.0 and 3.0, asking for 1.5 should give
       assetImage.obtainKey(ImageConfiguration(
         bundle: testAssetBundle,
-        devicePixelRatio: deviceRatio)
+        devicePixelRatio: deviceRatio),
       ).then(expectAsync1((AssetBundleImageKey bundleKey) {
         expect(bundleKey.name, expectedAssetPath);
         expect(bundleKey.scale, chosenAssetRatio);
@@ -201,6 +201,6 @@ void main() {
     test('Typical case 4.0', () {
       _buildBundleAndTestVariantLogic(4.0, 3.0, variantPath);
     });
-  }, skip: isBrowser);
+  });
 
 }
